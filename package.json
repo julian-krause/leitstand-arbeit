@@ -1,0 +1,14 @@
+{
+  "name": "leitstand-arbeit",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Leitstand (Arbeitsversion): viele Agenten über GitHub Copilot CLI führen, mit Outlook, Teams, OneDrive und To Do über Microsoft Graph",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT"
+}

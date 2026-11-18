@@ -1,0 +1,3 @@
+#!/bin/sh
+# Kommando der Agenten (Mac, Linux). Die eigentliche Arbeit macht leitstand.mjs.
+exec node "$(dirname "$0")/leitstand.mjs" "$@"
