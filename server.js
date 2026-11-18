@@ -11,12 +11,13 @@ import {
 } from './lib/store.js';
 import {
   removeFinishedChildren, removeChild, pickModel,
-  sendMessage, stopRun, stopAll, newChat, pump, interruptRun,
+  sendMessage, stopRun, stopAll, newChat, pump, interruptRun, closeBrowser,
 } from './lib/runs.js';
 import { MEETING_PREFIX } from './lib/agent.js';
 import { listPages, readPage, writePage } from './lib/pages.js';
 import { agentApi, decideVaultRequest } from './lib/identity.js';
 import { loginState, startLogin, logout, decideFreigabe } from './lib/m365.js';
+import { toolStatus, addDriveRoots, drives, findDrive } from './lib/werkzeuge.js';
 import { loginById, createLogin, updateLogin, deleteLogin, totpCode } from './lib/vault.js';
 import { overview, listDir, resolveInProject, FILE_TYPES } from './lib/files.js';
 
@@ -103,6 +104,7 @@ function chatAction(chat, body) {
       chatChanged(chat);
       return;
     case 'done':
+      closeBrowser(chat);
       chat.status = 'done';
       chat.attention = null;
       chat.snoozeUntil = null;
@@ -110,6 +112,7 @@ function chatAction(chat, body) {
       return;
     case 'archive':
       stopRun(chat);
+      closeBrowser(chat);
       chat.status = 'archived';
       chat.attention = null;
       chat.queued = null;
@@ -160,6 +163,30 @@ function updateSettings(section, body) {
       if (s.m365.inboundChatId !== before) s.m365.inboundSince = 0;
       break;
     }
+    case 'atlassian': {
+      const url = (u) => (/^https?:\/\/[^\s]+$/i.test(String(u || '').trim()) ? String(u).trim().replace(/\/+$/, '') : '');
+      s.atlassian = {
+        jiraUrl: url(body.jiraUrl),
+        confluenceUrl: url(body.confluenceUrl),
+        user: clean(body.user, 200),
+        readOnly: Boolean(body.readOnly),
+        sslVerify: body.sslVerify !== false,
+      };
+      secrets.atlassian ??= {};
+      if (body.jiraToken) secrets.atlassian.jiraToken = String(body.jiraToken).trim();
+      if (body.confluenceToken) secrets.atlassian.confluenceToken = String(body.confluenceToken).trim();
+      if (body.clearTokens) secrets.atlassian = {};
+      break;
+    }
+    case 'browser':
+      s.browser = { mode: body.mode === 'chrome' ? 'chrome' : 'eigen', headed: body.headed !== false };
+      break;
+    case 'disk':
+      s.disk = {
+        full: body.full !== false,
+        roots: addDriveRoots(Array.isArray(body.roots) ? body.roots : String(body.roots || '').split(/\n/)).map((r) => path.resolve(expandHome(r))),
+      };
+      break;
     case 'access':
       s.access = {
         hosts: String(body.hosts || '').split(/[\s,]+/).map((h) => h.toLowerCase()).filter((h) => /^[a-z0-9.-]+$/.test(h)),
@@ -191,13 +218,13 @@ async function api(req, url) {
   const [area, key, sub] = parts;
 
   if (area === 'state' && method === 'GET') {
-    return { ...publicState(), pages: listPages(), contextDir: CONTEXT_DIR };
+    return { ...publicState(), pages: listPages(), contextDir: CONTEXT_DIR, drives: drives(), werkzeuge: toolStatus() };
   }
 
   if (area === 'overview' && method === 'GET') return overview();
 
   if (area === 'projects' && sub === 'files' && method === 'GET') {
-    const project = findProject(key);
+    const project = findProject(key) || findDrive(key);
     if (!project) throw httpError(404, 'Projekt nicht gefunden');
     return listDir(project, url.searchParams.get('path') || '');
   }
@@ -221,7 +248,7 @@ async function api(req, url) {
         model: '',
         effort: '',
         allow: [],
-        identity: { m365: Boolean(body.m365) },
+        identity: { m365: Boolean(body.m365 ?? true), browser: body.browser !== false, computerUse: body.computerUse !== false, atlassian: body.atlassian !== false },
       };
       fs.mkdirSync(project.dir, { recursive: true });
       state.projects.push(project);
@@ -237,7 +264,7 @@ async function api(req, url) {
       if (typeof body.effort === 'string') project.effort = choiceOf({ effort: body.effort }).effort || '';
       if (Array.isArray(body.allow)) project.allow = body.allow.map(String).filter(Boolean);
       if (body.identity && typeof body.identity === 'object') {
-        project.identity = { m365: Boolean(body.identity.m365) };
+        project.identity = { m365: Boolean(body.identity.m365), browser: Boolean(body.identity.browser), computerUse: Boolean(body.identity.computerUse), atlassian: Boolean(body.identity.atlassian) };
       }
       if (typeof body.zentrale === 'boolean') {
         // Es gibt genau eine Zentrale.
@@ -257,7 +284,7 @@ async function api(req, url) {
       const machine = state.machines.find((m) => m.kind === 'local');
       project = {
         id: id(), name: 'Zentrale', dir: path.join(process.env.HOME || os.homedir(), 'projekte', 'zentrale'), machineId: machine.id,
-        mode: 'selbststaendig', model: '', effort: '', allow: [], identity: { m365: true }, zentrale: true,
+        mode: 'selbststaendig', model: '', effort: '', allow: [], identity: { m365: true, browser: true, computerUse: true, atlassian: true }, zentrale: true,
       };
       fs.mkdirSync(project.dir, { recursive: true });
       state.projects.push(project);
@@ -336,6 +363,8 @@ async function api(req, url) {
     }
     if (key === 'status' && method === 'GET') return loginState();
   }
+
+  if (area === 'werkzeuge' && method === 'GET') return toolStatus();
 
   if (area === 'freigaben' && key && method === 'POST') {
     const f = state.freigaben.find((x) => x.id === key);
@@ -506,7 +535,7 @@ const handle = async (req, res) => {
     // Skripte ausführen können, laufen abgeschottet: Sie dürfen den Leitstand nicht ansprechen.
     if (url.pathname.startsWith('/files/')) {
       const [projectId, ...rest] = url.pathname.slice('/files/'.length).split('/').map(decodeURIComponent);
-      const project = findProject(projectId);
+      const project = findProject(projectId) || findDrive(projectId);
       if (!project) throw httpError(404, 'Projekt nicht gefunden');
       let file = resolveInProject(project, rest.join('/'));
       if (fs.statSync(file).isDirectory()) {

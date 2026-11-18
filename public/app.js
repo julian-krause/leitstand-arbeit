@@ -515,8 +515,11 @@ const IMAGE_FILE = /\.(png|jpe?g|webp|gif|svg|ico)$/i;
 const VIDEO_FILE = /\.(mp4|webm|mov)$/i;
 const AUDIO_FILE = /\.(mp3|m4a|wav|ogg)$/i;
 
+// Orte der Dateiansicht: Projektordner und, bei Laufwerkszugriff, Home-Ordner und Laufwerke.
+const filePlaces = () => [...S.projects.filter((p) => !p.zentrale), ...(S.drives || [])];
+
 async function openFiles(projectId, relative = '', file = null) {
-  const local = S.projects;
+  const local = filePlaces();
   const project = local.find((p) => p.id === projectId) || local[0];
   if (!project) {
     $('#files-list').innerHTML = '<p class="hint">Noch kein Projekt.</p>';
@@ -537,9 +540,9 @@ async function openFiles(projectId, relative = '', file = null) {
 
 function renderFiles() {
   const { projectId, path: relative, entries, file, error } = S.files;
-  const local = S.projects;
+  const local = filePlaces();
   const parts = relative.split('/').filter(Boolean);
-  const crumbs = [`<button class="crumb" data-path="">${esc(S.projects.find((p) => p.id === projectId)?.name || '')}</button>`,
+  const crumbs = [`<button class="crumb" data-path="">${esc(local.find((p) => p.id === projectId)?.name || '')}</button>`,
     ...parts.map((part, i) => `<button class="crumb" data-path="${esc(parts.slice(0, i + 1).join('/'))}">${esc(part)}</button>`)].join('<span class="sep">/</span>');
   $('#files-list').innerHTML = `
     ${local.length > 1 ? `<select id="files-project">${local.map((p) => `<option value="${p.id}" ${p.id === projectId ? 'selected' : ''}>${esc(p.name)}</option>`).join('')}</select>` : ''}
@@ -1154,7 +1157,7 @@ async function createProject(data) {
   if (template) {
     await api('PATCH', `/api/projects/${project.id}`, {
       mode: template.mode, model: template.model || '', effort: template.effort || '',
-      identity: 'm365' in data ? { m365: Boolean(data.m365) } : template.identity,
+      identity: 'm365' in data ? { m365: Boolean(data.m365), browser: Boolean(data.browser), computerUse: Boolean(data.computerUse), atlassian: Boolean(data.atlassian) } : template.identity,
     });
   }
   return project;
@@ -1166,8 +1169,11 @@ function newProjectDialog() {
     `<h2>Neues Projekt</h2>
     <label>Name<input name="name" required maxlength="60"></label>
     <label class="check"><input type="checkbox" name="m365" ${!last || last.identity?.m365 ? 'checked' : ''}> Outlook &amp; Teams nutzen (Microsoft 365)</label>
+    <label class="check"><input type="checkbox" name="browser" ${!last || last.identity?.browser ? 'checked' : ''}> Browser</label>
+    <label class="check"><input type="checkbox" name="computerUse" ${!last || last.identity?.computerUse ? 'checked' : ''}> Computer Use</label>
+    <label class="check"><input type="checkbox" name="atlassian" ${!last || last.identity?.atlassian ? 'checked' : ''}> Jira &amp; Confluence</label>
     <p class="note" style="margin:0">Mehr braucht es nicht. Den Ordner legt der Leitstand auf diesem Rechner selbst an; Modell, Aufwand und Modus übernimmt er vom letzten Projekt und lässt sich unter „Projekte“ ändern.</p>`,
-    (data) => createProject({ ...data, m365: Boolean(data.m365) }),
+    (data) => createProject({ ...data, m365: Boolean(data.m365), browser: Boolean(data.browser), computerUse: Boolean(data.computerUse), atlassian: Boolean(data.atlassian) }),
   );
 }
 
@@ -1256,6 +1262,9 @@ function renderProjects() {
       <div class="checks">
         <span class="note" style="margin:0">Der Agent darf nutzen:</span>
         <label title="Mails und Kalender lesen, Teams-Chats lesen, Nachrichten in deinem Namen senden (je nach Einstellung erst nach deiner Freigabe)"><input type="checkbox" data-identity="m365" ${i.m365 ? 'checked' : ''}>Outlook &amp; Teams</label>
+        <label title="Eigener Browser (agent-browser): Intranet, Weboberflächen, Formulare"><input type="checkbox" data-identity="browser" ${i.browser ? 'checked' : ''}>Browser</label>
+        <label title="Bildschirm sehen, klicken, tippen, Programme bedienen (Mac: Peekaboo, Windows: Windows-MCP)"><input type="checkbox" data-identity="computerUse" ${i.computerUse ? 'checked' : ''}>Computer Use</label>
+        <label title="Jira und Confluence über MCP (Einstellungen → Jira &amp; Confluence)"><input type="checkbox" data-identity="atlassian" ${i.atlassian ? 'checked' : ''}>Jira &amp; Confluence</label>
       </div>
       ${p.allow?.length ? `<div class="chips">${p.allow.map((a, n) => `<span class="chip">${esc(a)}<button data-remove="${n}" title="Erlaubnis entziehen" aria-label="Erlaubnis ${esc(a)} entziehen">×</button></span>`).join('')}</div>` : ''}
     </div>`;
@@ -1525,6 +1534,9 @@ function renderSettings() {
   const secret = (set) => (set ? 'gesetzt, leer lassen für unverändert' : '');
   const v = (value) => esc(value ?? '');
   const access = s.access || {};
+  const atl = s.atlassian || {};
+  const br = s.browser || {};
+  const disk = s.disk || {};
   $('#settings').innerHTML = `<div class="inner">
     <h1>Einstellungen</h1>
     ${setupCard()}
@@ -1555,6 +1567,45 @@ function renderSettings() {
       </div>
       <p class="note">Tagesbriefing: Die Zentrale fasst Termine, ungelesene Mails und Teams-Chats zusammen und schickt das in den Benachrichtigungs-Chat. Leer lassen für kein Briefing.</p>
       <p class="note">Chat-IDs liefert ein Agent mit <code>leitstand teams chats</code>. In den Benachrichtigungs-Chat schreibt der Leitstand, wenn ein Chat dich braucht; Nachrichten aus dem Eingangs-Chat gehen an die Zentrale, ihre Antwort kommt dorthin zurück. Geänderte Rechte (Kanäle, Grundrechte) gelten erst nach erneuter Anmeldung.</p>
+      <div class="row"><button class="primary" type="submit">Speichern</button><span class="note" data-result></span></div>
+    </form>
+
+
+    <form class="card" data-section="atlassian">
+      <h2>Jira &amp; Confluence ${S.werkzeuge?.atlassian ? '<span class="badge ok">eingerichtet</span>' : ''}</h2>
+      <p class="note">Die Agenten arbeiten über den MCP-Server <code>mcp-atlassian</code> direkt in Jira und Confluence (suchen, lesen, Vorgänge und Seiten anlegen und ändern). <b>Cloud</b> (…atlassian.net): Mail-Adresse und API-Token von <a href="https://id.atlassian.com/manage-profile/security/api-tokens" target="_blank" rel="noopener">id.atlassian.com</a>. <b>Server/Data Center</b>: Benutzer leer lassen und ein persönliches Zugriffstoken (Profil → Personal Access Tokens) eintragen. Braucht <code>uvx</code> (uv) oder Docker auf diesem Rechner${S.werkzeuge ? ` – ${S.werkzeuge.uvx ? 'uvx gefunden' : S.werkzeuge.docker ? 'Docker gefunden' : '<b>weder uvx noch Docker gefunden</b>'}` : ''}.</p>
+      <div class="fields">
+        <label>Jira-Adresse<input name="jiraUrl" value="${v(atl.jiraUrl)}" placeholder="https://firma.atlassian.net oder https://jira.firma.de"></label>
+        <label>Confluence-Adresse<input name="confluenceUrl" value="${v(atl.confluenceUrl)}" placeholder="https://firma.atlassian.net/wiki oder https://confluence.firma.de"></label>
+        <label>Benutzer (nur Cloud: Mail-Adresse)<input name="user" value="${v(atl.user)}" autocomplete="off"></label>
+        <label>Jira-Token<input name="jiraToken" type="password" autocomplete="new-password" placeholder="${secret(f.jiraToken)}"></label>
+        <label>Confluence-Token<input name="confluenceToken" type="password" autocomplete="new-password" placeholder="${secret(f.confluenceToken)} (Cloud: dasselbe wie Jira)"></label>
+      </div>
+      <div class="checks">
+        <label><input type="checkbox" name="readOnly" ${atl.readOnly ? 'checked' : ''}>Nur lesen</label>
+        <label><input type="checkbox" name="sslVerify" ${atl.sslVerify !== false ? 'checked' : ''}>Zertifikate prüfen (aus nur bei Firmen-Zertifikaten, die nicht vertraut sind)</label>
+      </div>
+      <div class="row"><button class="primary" type="submit">Speichern</button><span class="note" data-result></span></div>
+    </form>
+
+    <form class="card" data-section="browser">
+      <h2>Browser der Agenten ${S.werkzeuge ? (S.werkzeuge.agentBrowser ? '<span class="badge ok">agent-browser gefunden</span>' : '<span class="badge">nicht installiert</span>') : ''}</h2>
+      <p class="note">${S.werkzeuge && !S.werkzeuge.agentBrowser ? 'Installieren: <code>npm install -g agent-browser</code> und <code>agent-browser install</code>. ' : ''}Eigenes Fenster: Jeder Chat hat seinen Browser, Anmeldungen bleiben je Projekt gespeichert. Eigener Chrome: Die Agenten arbeiten in Tabs deines laufenden Chrome mit deinen Anmeldungen (Firmen-SSO); Chrome muss dafür mit Remote-Debugging laufen (<code>chrome://inspect/#remote-debugging</code>).</p>
+      <div class="fields">
+        <label>Art<select name="mode">
+          <option value="eigen" ${br.mode !== 'chrome' ? 'selected' : ''}>Eigenes Fenster je Chat</option>
+          <option value="chrome" ${br.mode === 'chrome' ? 'selected' : ''}>Mein laufender Chrome (SSO)</option>
+        </select></label>
+      </div>
+      <div class="checks"><label><input type="checkbox" name="headed" ${br.headed !== false ? 'checked' : ''}>Fenster sichtbar</label></div>
+      <div class="row"><button class="primary" type="submit">Speichern</button><span class="note" data-result></span></div>
+    </form>
+
+    <form class="card" data-section="disk">
+      <h2>Laufwerk</h2>
+      <p class="note">Voller Zugriff: Die Agenten lesen und schreiben überall auf diesem Rechner (<code>copilot --allow-all-paths</code>), nicht nur im Projektordner. Zusätzliche Laufwerke und Ordner (etwa Netzlaufwerke wie <code>H:\\</code> oder <code>/Volumes/Team</code>) kennen die Agenten ausdrücklich und erscheinen unter „Dateien“.${S.werkzeuge?.computerUse ? ` Computer Use auf diesem Rechner: ${esc(S.werkzeuge.computerUse)}.` : ''}</p>
+      <div class="checks"><label><input type="checkbox" name="full" ${disk.full !== false ? 'checked' : ''}>Voller Zugriff auf das Laufwerk</label></div>
+      <label>Laufwerke und Ordner (je Zeile einer)<textarea name="roots" rows="3" placeholder="H:\\&#10;/Volumes/Projekte">${esc((disk.roots || []).join('\n'))}</textarea></label>
       <div class="row"><button class="primary" type="submit">Speichern</button><span class="note" data-result></span></div>
     </form>
 
@@ -1609,6 +1660,15 @@ $('#settings').addEventListener('submit', async (event) => {
       if (section === 'm365') {
         data.readChannels = Boolean(data.readChannels);
         data.basic = Boolean(data.basic);
+      }
+      if (section === 'atlassian') {
+        data.readOnly = Boolean(data.readOnly);
+        data.sslVerify = Boolean(data.sslVerify);
+      }
+      if (section === 'browser') data.headed = Boolean(data.headed);
+      if (section === 'disk') {
+        data.full = Boolean(data.full);
+        data.roots = String(data.roots || '').split('\n').map((r) => r.trim()).filter(Boolean);
       }
       await api('PUT', `/api/settings/${section}`, data);
     }
@@ -1720,6 +1780,8 @@ function applyState(data) {
   S.freigaben = data.freigaben || [];
   S.outbox = data.outbox || [];
   S.m365 = data.m365 || null;
+  if (data.drives) S.drives = data.drives;
+  if (data.werkzeuge) S.werkzeuge = data.werkzeuge;
   S.logins = data.logins || [];
   S.contextDir = data.contextDir;
 }
